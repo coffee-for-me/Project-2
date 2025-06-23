@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Mic, Square, Play, Pause, Trash2, Send, AlertCircle } from 'lucide-react';
+import { Mic, Square, Play, Pause, Trash2, Send, AlertCircle, Volume2 } from 'lucide-react';
 import Button from './ui/Button';
 
 interface VoiceRecorderProps {
@@ -73,7 +73,11 @@ const VoiceRecorder: React.FC<VoiceRecorderProps> = ({
 
     if (mediaRecorderRef.current) {
       if (mediaRecorderRef.current.state !== 'inactive') {
-        mediaRecorderRef.current.stop();
+        try {
+          mediaRecorderRef.current.stop();
+        } catch (e) {
+          console.warn('Error stopping media recorder:', e);
+        }
       }
       mediaRecorderRef.current = null;
     }
@@ -175,14 +179,12 @@ const VoiceRecorder: React.FC<VoiceRecorderProps> = ({
   const getBestSupportedMimeType = (): string => {
     const supportedTypes = [
       'audio/webm;codecs=opus',
-      'audio/webm;codecs=vp8,opus',
       'audio/webm',
       'audio/mp4;codecs=mp4a.40.2',
       'audio/mp4',
       'audio/ogg;codecs=opus',
       'audio/ogg',
-      'audio/wav',
-      'audio/mpeg'
+      'audio/wav'
     ];
     
     for (const type of supportedTypes) {
@@ -206,14 +208,14 @@ const VoiceRecorder: React.FC<VoiceRecorderProps> = ({
     setPermissionState(prev => ({ ...prev, error: null }));
     
     try {
-      // Test microphone access
+      // Test microphone access with optimal constraints
       const stream = await navigator.mediaDevices.getUserMedia({ 
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
           sampleRate: { ideal: 44100, min: 8000, max: 48000 },
-          channelCount: { ideal: 1 }
+          channelCount: { ideal: 1, max: 2 }
         } 
       });
       
@@ -294,14 +296,14 @@ const VoiceRecorder: React.FC<VoiceRecorderProps> = ({
     try {
       setPermissionState(prev => ({ ...prev, error: null }));
       
-      // Get fresh audio stream
+      // Get fresh audio stream with optimized settings
       const stream = await navigator.mediaDevices.getUserMedia({ 
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
           sampleRate: { ideal: 44100, min: 8000, max: 48000 },
-          channelCount: { ideal: 1 }
+          channelCount: { ideal: 1, max: 2 }
         } 
       });
       
@@ -326,7 +328,14 @@ const VoiceRecorder: React.FC<VoiceRecorderProps> = ({
         });
       } catch (mimeError) {
         console.warn('Failed with preferred MIME type, trying default:', mimeError);
-        recorder = new MediaRecorder(stream);
+        try {
+          recorder = new MediaRecorder(stream, { 
+            audioBitsPerSecond: 128000
+          });
+        } catch (fallbackError) {
+          console.warn('Failed with bitrate, using basic recorder:', fallbackError);
+          recorder = new MediaRecorder(stream);
+        }
       }
       
       mediaRecorderRef.current = recorder;
@@ -346,6 +355,8 @@ const VoiceRecorder: React.FC<VoiceRecorderProps> = ({
             type: recorder.mimeType || mimeType 
           });
           
+          console.log('Created audio blob:', audioBlob.size, 'bytes, type:', audioBlob.type);
+          
           if (audioBlob.size > 0) {
             const audioUrl = URL.createObjectURL(audioBlob);
             
@@ -362,6 +373,11 @@ const VoiceRecorder: React.FC<VoiceRecorderProps> = ({
               error: 'Recording failed - no audio data captured'
             }));
           }
+        } else {
+          setPermissionState(prev => ({
+            ...prev,
+            error: 'Recording failed - no audio chunks received'
+          }));
         }
         
         cleanup();
@@ -381,7 +397,7 @@ const VoiceRecorder: React.FC<VoiceRecorderProps> = ({
       };
 
       // Start recording with data collection interval
-      recorder.start(1000); // Collect data every second
+      recorder.start(100); // Collect data every 100ms for better reliability
       
       setRecordingState(prev => ({
         ...prev,
@@ -411,7 +427,12 @@ const VoiceRecorder: React.FC<VoiceRecorderProps> = ({
       console.log('Stopping recording, current state:', state);
       
       if (state === 'recording' || state === 'paused') {
-        mediaRecorderRef.current.stop();
+        try {
+          mediaRecorderRef.current.stop();
+        } catch (error) {
+          console.error('Error stopping recorder:', error);
+          cleanup();
+        }
       }
     }
   };
@@ -434,11 +455,19 @@ const VoiceRecorder: React.FC<VoiceRecorderProps> = ({
       audio.onerror = (e) => {
         console.error('Audio playback error:', e);
         setIsPlaying(false);
+        setPermissionState(prev => ({
+          ...prev,
+          error: 'Audio playback failed. The recording may be corrupted.'
+        }));
       };
       
       audio.play().catch(error => {
         console.error('Failed to play audio:', error);
         setIsPlaying(false);
+        setPermissionState(prev => ({
+          ...prev,
+          error: 'Failed to play audio. The recording may be corrupted.'
+        }));
       });
     }
   };
@@ -474,6 +503,7 @@ const VoiceRecorder: React.FC<VoiceRecorderProps> = ({
     });
     
     setIsPlaying(false);
+    setPermissionState(prev => ({ ...prev, error: null }));
   };
 
   /**
@@ -501,7 +531,7 @@ const VoiceRecorder: React.FC<VoiceRecorderProps> = ({
       <div className={`bg-red-900/20 border border-red-700 rounded-lg p-4 ${className}`}>
         <div className="flex items-center space-x-2 mb-2">
           <AlertCircle className="w-5 h-5 text-red-400" />
-          <span className="text-red-400 font-medium">Microphone Error</span>
+          <span className="text-red-400 font-medium">Audio Error</span>
         </div>
         <p className="text-red-300 text-sm mb-3">{permissionState.error}</p>
         <div className="flex space-x-2">
@@ -536,10 +566,10 @@ const VoiceRecorder: React.FC<VoiceRecorderProps> = ({
               onClick={startRecording}
               disabled={disabled || isInitializing}
               isLoading={isInitializing}
-              className="flex items-center space-x-2"
+              className="flex items-center space-x-2 bg-red-600 hover:bg-red-700"
             >
               <Mic className="w-4 h-4" />
-              <span>{isInitializing ? 'Initializing...' : 'Record'}</span>
+              <span>{isInitializing ? 'Initializing...' : 'Record Voice'}</span>
             </Button>
           ) : (
             <>
@@ -564,10 +594,16 @@ const VoiceRecorder: React.FC<VoiceRecorderProps> = ({
 
       {/* Playback Controls */}
       {recordingState.audioBlob && (
-        <div className="bg-gray-800 rounded-lg p-4 space-y-3">
+        <div className="bg-gray-800 rounded-lg p-4 space-y-3 border border-gray-700">
           <div className="flex items-center justify-between">
-            <span className="text-sm text-gray-400">
-              Recorded Audio ({formatDuration(recordingState.duration)})
+            <div className="flex items-center space-x-2">
+              <Volume2 className="w-4 h-4 text-green-400" />
+              <span className="text-sm text-gray-300">
+                Voice Message ({formatDuration(recordingState.duration)})
+              </span>
+            </div>
+            <span className="text-xs text-gray-500">
+              {(recordingState.audioBlob.size / 1024).toFixed(1)} KB
             </span>
           </div>
           
@@ -576,25 +612,29 @@ const VoiceRecorder: React.FC<VoiceRecorderProps> = ({
               onClick={isPlaying ? pauseAudio : playAudio}
               variant="secondary"
               size="sm"
+              className="flex items-center space-x-2"
             >
               {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
+              <span>{isPlaying ? 'Pause' : 'Play'}</span>
             </Button>
             
             <Button
               onClick={deleteRecording}
               variant="danger"
               size="sm"
+              className="flex items-center space-x-2"
             >
               <Trash2 className="w-4 h-4" />
+              <span>Delete</span>
             </Button>
             
             <Button
               onClick={sendAudio}
               disabled={disabled}
-              className="flex items-center space-x-2"
+              className="flex items-center space-x-2 bg-green-600 hover:bg-green-700"
             >
               <Send className="w-4 h-4" />
-              <span>Send</span>
+              <span>Send Voice</span>
             </Button>
           </div>
         </div>
